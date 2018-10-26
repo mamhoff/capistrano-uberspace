@@ -1,37 +1,43 @@
-def get_ruby_version
-  ruby_version_file = ".ruby-version"
-  if File.exists?(ruby_version_file)
-    File.read(ruby_version_file).strip
-  else
-    abort("Please provide a '.ruby-version' file with a ruby version supported by Uberspace.")
-  end
-end
-
-task :setup do
-  # Set a random, ephemeral port, and hope it's free.
-  # Could be refactored to actually check whether it is.
-  set :unicorn_port, -> { rand(61000-32768+1)+32768 }
-
-  invoke "uberspace:ruby"
-  invoke "uberspace:gemrc"
-  invoke "uberspace:bundler"
-  invoke "uberspace:setup_svscan"
-  invoke "uberspace:setup_daemon"
-  invoke "uberspace:setup_reverse_proxy"
-  invoke "uberspace:setup_database_and_config"
-end
-
 namespace :uberspace do
   # invoked in capistrano_hooks.rake before :check and :starting
   task :defaults do
     on roles(:web) do |host|
       set :home, "/home/#{host.user}"
+      # Set a random, ephemeral port, and hope it's free.
+      # Could be refactored to actually check whether it is.
+
+      set :port, -> { rand(61000-32768+1)+32768 }
+    end
+  end
+
+  desc "Setup a Uberspace account for serving Rails"
+  task setup: [:setup_supervisord, :setup_reverse_proxy, :setup_database_and_config]
+
+  desc "Start the Rails Server"
+  task :start do
+    on roles(:web) do
+      execute "supervisorctl start #{fetch :application}"
+    end
+  end
+
+  desc "Stop the Rails Server"
+  task :stop do
+    on roles(:web) do
+      execute "supervisorctl stop #{fetch :application}"
+    end
+  end
+
+  desc "Restart the Rails server"
+  task :restart do
+    on roles(:web) do
+      execute "supervisorctl restart #{fetch :application}"
     end
   end
 
   desc "Setup uberspace's MySQL server"
-  task :setup_database_and_config do
+  task setup_database_and_config: :defaults do
     on roles(:web) do |host|
+      database_name = "#{host.user}_#{fetch(:application).gsub(/\W/, '_')}_#{fetch :stage}"
       my_cnf = capture('cat ~/.my.cnf')
       config = {}
       env = (fetch :stage).to_s
@@ -39,123 +45,54 @@ namespace :uberspace do
       config[env] = {
         'adapter' => 'mysql2',
         'encoding' => 'utf8',
-        'database' => "#{host.user}_rails_#{fetch :application}_#{env}",
+        'database' => database_name,
         'host' => 'localhost'
       }
 
-      my_cnf.scan(/^user=(\w+)/)
-      config[env]['username'] = $1
+      config[env]['username'] = my_cnf.scan(/^user=(.*)$/)[0][0]
 
-      my_cnf.scan(/^password=(\w+)/)
-      config[env]['password'] = $1
+      config[env]['password'] = my_cnf.scan(/^password=(.*)$/)[0][0]
 
-      my_cnf.scan(/^port=(\d+)/)
-      config[env]['port'] = $1.to_i
+      config[env]['port'] = 3306
 
-      execute "mysql -e 'CREATE DATABASE IF NOT EXISTS #{config[env]['database']} CHARACTER SET utf8 COLLATE utf8_general_ci;'"
+      execute "mysql -e 'CREATE DATABASE IF NOT EXISTS #{database_name} CHARACTER SET utf8 COLLATE utf8_general_ci;'"
 
       execute "mkdir -p #{fetch :deploy_to}/shared/config"
       database_yml = StringIO.new(config.to_yaml)
       upload! database_yml, "#{fetch :deploy_to}/shared/config/database.yml"
+      upload! 'config/master.key', "#{fetch :deploy_to}/shared/config/master.key"
     end
   end
 
-  task :start do
-    on roles(:web) do
-      execute "svc -u #{fetch :home}/service/rails-#{fetch :application}"
-    end
-  end
-
-  task :stop do
-    on roles(:web) do
-      execute "svc -d #{fetch :home}/service/rails-#{fetch :application}"
-    end
-  end
-
-  task :restart do
-    on roles(:web) do
-      execute "svc -du #{fetch :home}/service/rails-#{fetch :application}"
-    end
-  end
-
-
-  desc "Setup svscan - for your personal service directory"
-  task :setup_svscan do
-    on roles(:web) do
-      execute 'test -d ~/service || uberspace-setup-svscan ; echo 0'
-    end
-  end
-
-
-  desc "Setup daemontools"
-  task :setup_daemon do
-
-    daemon_script = <<-EOF
-#!/bin/bash
-export HOME=#{fetch :home}
-source $HOME/.bash_profile
-cd #{fetch :deploy_to}/current
-bundle exec unicorn --port #{fetch :unicorn_port} -E production 2>&1
-      EOF
-
-    log_script = <<-EOF
-#!/bin/sh
-exec multilog t ./main
+  desc "Setup supervisord"
+  task setup_supervisord: :defaults do
+    app_config = <<-EOF
+[program:#{fetch :application}]
+command=bundle exec rails s -p #{fetch :port} -e #{fetch :stage}
+directory=#{fetch :home}/#{fetch :application}/current
+autostart=yes
+autorestart=yes
     EOF
 
-    daemon_script_stream = StringIO.new(daemon_script)
-    log_script_stream = StringIO.new(log_script)
+    app_config_stream = StringIO.new(app_config)
     on roles(:web) do
-      execute                        "mkdir -p #{fetch :home}/etc/run-rails-#{fetch :application}"
-      execute                        "mkdir -p #{fetch :home}/etc/run-rails-#{fetch :application}/log"
-      upload! daemon_script_stream,  "#{fetch :home}/etc/run-rails-#{fetch :application}/run"
-      upload! log_script_stream,     "#{fetch :home}/etc/run-rails-#{fetch :application}/log/run"
-      execute                        "chmod +x #{fetch :home}/etc/run-rails-#{fetch :application}/run"
-      execute                        "chmod +x #{fetch :home}/etc/run-rails-#{fetch :application}/log/run"
-      execute                        "ln -nfs #{fetch :home}/etc/run-rails-#{fetch :application} #{fetch :home}/service/rails-#{fetch :application}"
+      upload! app_config_stream, "#{fetch :home}/etc/services.d/#{fetch :application}.ini"
     end
   end
 
-  task :setup_reverse_proxy do
+  task setup_reverse_proxy: :defaults do
       htaccess = <<-EOF
+DirectoryIndex disabled
 RewriteEngine On
 RewriteCond %{DOCUMENT_ROOT}/%{REQUEST_FILENAME} !-f
-RewriteRule ^(.*)$ http://localhost:#{fetch :unicorn_port}/$1 [P]
+RewriteRule ^(.*)$ http://localhost:#{fetch :port}/$1 [P]
       EOF
       htaccess_stream = StringIO.new(htaccess)
-      path = fetch(:domain) ? "/var/www/virtual/#{fetch :user}/#{fetch :domain}" : "#{fetch :home}/html"
-      on roles(:web) do
-        execute                  "mkdir -p #{path}"
+      on roles(:web) do |host|
+        path = "/var/www/virtual/#{host.user}/html"
+        execute "mkdir -p #{path}"
         upload! htaccess_stream, "#{path}/.htaccess"
-        execute                  "chmod +r #{path}/.htaccess"
-        execute                  "uberspace-add-domain -qwd #{fetch :domain} ; true" if fetch(:domain)
-    end
-  end
-
-  task :ruby do
-    ruby_version = fetch(:ruby_version, -> { get_ruby_version })
-    path_settings = <<-END
-export PATH=/package/host/localhost/ruby-#{ruby_version}/bin:$PATH
-export PATH=$HOME/.gem/ruby/#{ruby_version}/bin:$PATH
-END
-    on roles(:web) do
-      # Remove old rubies
-      execute "sed -i '/\\\/ruby-/d' .bashrc"
-      execute "echo '#{path_settings}' >> .bashrc"
-    end
-  end
-
-  task :gemrc do
-    on roles(:web) do
-      execute 'echo "gem: --user-install --no-rdoc --no-ri" > ~/.gemrc'
-    end
-  end
-
-  task :bundler do
-    on roles(:web) do
-      execute 'gem install bundler'
-      execute 'bundle config path ~/.gem'
+        execute "chmod +r #{path}/.htaccess"
     end
   end
 end
-
