@@ -69,7 +69,7 @@ namespace :uberspace do
     app_config = <<-EOF
 [program:#{fetch :application}]
 command=bundle exec rails s -p #{fetch :port} -e #{fetch :stage}
-directory=#{fetch :home}/#{fetch :application}/current
+directory=#{fetch :deploy_to}/current
 autostart=yes
 autorestart=yes
     EOF
@@ -85,7 +85,7 @@ autorestart=yes
 DirectoryIndex disabled
 RewriteEngine On
 RewriteCond %{DOCUMENT_ROOT}/%{REQUEST_FILENAME} !-f
-RewriteRule ^(.*)$ http://localhost:#{fetch :port}/$1 [P]
+RewriteRule ^(.*)$ http://#{host.user}.local.uberspace.de:#{fetch :port}/$1 [P]
       EOF
       htaccess_stream = StringIO.new(htaccess)
       on roles(:web) do |host|
