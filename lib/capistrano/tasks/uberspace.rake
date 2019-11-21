@@ -49,9 +49,9 @@ namespace :uberspace do
         'host' => 'localhost'
       }
 
-      config[env]['username'] = my_cnf.scan(/^user=(.*)$/)[0][0]
+      config[env]['username'] = my_cnf.scan(/^user=(.*)\r?$/)[0][0]
 
-      config[env]['password'] = my_cnf.scan(/^password=(.*)$/)[0][0]
+      config[env]['password'] = my_cnf.scan(/^password=(.*)\r?$/)[0][0]
 
       config[env]['port'] = 3306
 
