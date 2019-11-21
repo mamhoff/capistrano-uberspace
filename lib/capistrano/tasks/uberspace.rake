@@ -81,6 +81,7 @@ autorestart=yes
   end
 
   task setup_reverse_proxy: :defaults do
+    on roles(:web) do |host|
       htaccess = <<-EOF
 DirectoryIndex disabled
 RewriteEngine On
@@ -88,11 +89,10 @@ RewriteCond %{DOCUMENT_ROOT}/%{REQUEST_FILENAME} !-f
 RewriteRule ^(.*)$ http://#{host.user}.local.uberspace.de:#{fetch :port}/$1 [P]
       EOF
       htaccess_stream = StringIO.new(htaccess)
-      on roles(:web) do |host|
-        path = "/var/www/virtual/#{host.user}/html"
-        execute "mkdir -p #{path}"
-        upload! htaccess_stream, "#{path}/.htaccess"
-        execute "chmod +r #{path}/.htaccess"
+      path = "/var/www/virtual/#{host.user}/html"
+      execute "mkdir -p #{path}"
+      upload! htaccess_stream, "#{path}/.htaccess"
+      execute "chmod +r #{path}/.htaccess"
     end
   end
 end
